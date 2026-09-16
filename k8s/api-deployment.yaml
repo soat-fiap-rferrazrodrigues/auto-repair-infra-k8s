@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auto-repair-api
+  labels:
+    app: auto-repair-api
+    tags.datadoghq.com/service: auto-repair-shop-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auto-repair-api
+  template:
+    metadata:
+      labels:
+        app: auto-repair-api
+        tags.datadoghq.com/service: auto-repair-shop-api
+      annotations:
+        # Tells the Datadog agent to parse these container logs as JSON.
+        ad.datadoghq.com/api.logs: '[{"source":"nodejs","service":"auto-repair-shop-api"}]'
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/soat-fiap-rferrazrodrigues/auto-repair-shop-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: api-config
+            # Populated by External Secrets from AWS Secrets Manager.
+            - secretRef:
+                name: api-secrets
+          env:
+            # Send APM traces to the Datadog agent running on the same node.
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: DD_TRACE_ENABLED
+              value: 'true'
+            - name: DD_SERVICE
+              value: auto-repair-shop-api
+            - name: DD_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: api-config
+                  key: ENVIRONMENT
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10

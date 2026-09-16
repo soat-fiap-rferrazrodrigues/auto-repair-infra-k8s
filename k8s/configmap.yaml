@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+data:
+  # Patched by the CI pipeline with the RDS endpoint exported by the
+  # database Terraform stack (terraform/db outputs.db_host).
+  DATABASE_HOST: auto-repair-homolog-db.xxxxx.us-east-1.rds.amazonaws.com
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: auto_repair
+  DATABASE_USER: postgres
+  DATABASE_SSL: "true"
+  PORT: "3000"
+  ENVIRONMENT: homolog
+  NODE_ENV: production

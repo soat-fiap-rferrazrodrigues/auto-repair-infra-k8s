@@ -1,0 +1,101 @@
+name: CI/CD - Kubernetes Infrastructure
+
+on:
+  push:
+    branches: [main, homolog]
+    paths: ['terraform/k8s/**', 'k8s/**']
+  pull_request:
+    branches: [main, homolog]
+    paths: ['terraform/k8s/**', 'k8s/**']
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  # Runs on PRs: shows the plan as a review artifact, never applies.
+  plan:
+    name: Validate & Plan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform/k8s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend-config="key=k8s/homolog/terraform.tfstate"
+      - run: terraform validate
+      - run: terraform plan -var="environment=homolog" -no-color
+
+      - name: Validate Kubernetes manifests
+        working-directory: k8s
+        run: |
+          curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
+          ./kubeconform -summary -ignore-missing-schemas ./*.yaml
+
+  apply-homolog:
+    name: Apply Homolog
+    needs: plan
+    if: github.ref == 'refs/heads/homolog' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: homolog
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Provision cluster
+        working-directory: terraform/k8s
+        run: |
+          terraform init -backend-config="key=k8s/homolog/terraform.tfstate"
+          terraform apply -auto-approve -var="environment=homolog"
+
+      - name: Apply manifests
+        run: |
+          aws eks update-kubeconfig --name auto-repair-homolog --region $AWS_REGION
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/external-secrets.yaml
+          kubectl apply -f k8s/datadog-agent.yaml
+          kubectl apply -f k8s/api-deployment.yaml
+          kubectl apply -f k8s/api-service.yaml
+          kubectl apply -f k8s/hpa.yaml
+
+  apply-prod:
+    name: Apply Production
+    needs: plan
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Provision cluster
+        working-directory: terraform/k8s
+        run: |
+          terraform init -backend-config="key=k8s/prod/terraform.tfstate"
+          terraform apply -auto-approve -var="environment=prod"
+
+      - name: Apply manifests
+        run: |
+          aws eks update-kubeconfig --name auto-repair-prod --region $AWS_REGION
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f k8s/

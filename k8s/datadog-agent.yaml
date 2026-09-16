@@ -1,0 +1,136 @@
+---
+# Datadog Agent: collects node/pod metrics (CPU, memory), logs and APM traces.
+# The API key is provisioned by External Secrets from AWS Secrets Manager.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: datadog-agent
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: datadog-agent
+rules:
+  - apiGroups: ['']
+    resources:
+      - nodes
+      - nodes/metrics
+      - nodes/proxy
+      - pods
+      - services
+      - endpoints
+      - events
+      - namespaces
+    verbs: ['get', 'list', 'watch']
+  - apiGroups: ['apps']
+    resources: ['deployments', 'replicasets', 'daemonsets', 'statefulsets']
+    verbs: ['get', 'list', 'watch']
+  - apiGroups: ['autoscaling']
+    resources: ['horizontalpodautoscalers']
+    verbs: ['get', 'list', 'watch']
+  - apiGroups: ['metrics.k8s.io']
+    resources: ['pods', 'nodes']
+    verbs: ['get', 'list', 'watch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: datadog-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: datadog-agent
+subjects:
+  - kind: ServiceAccount
+    name: datadog-agent
+    namespace: monitoring
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: datadog-agent
+  namespace: monitoring
+  labels:
+    app: datadog-agent
+spec:
+  selector:
+    matchLabels:
+      app: datadog-agent
+  template:
+    metadata:
+      labels:
+        app: datadog-agent
+    spec:
+      serviceAccountName: datadog-agent
+      containers:
+        - name: agent
+          image: gcr.io/datadoghq/agent:7
+          env:
+            - name: DD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: datadog-secret
+                  key: DD_API_KEY
+            - name: DD_SITE
+              value: datadoghq.com
+            - name: DD_KUBERNETES_KUBELET_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            # Cluster resource metrics (CPU/memory) feeding the HPA dashboards.
+            - name: DD_KUBELET_TLS_VERIFY
+              value: 'false'
+            # Log collection with JSON auto-parsing.
+            - name: DD_LOGS_ENABLED
+              value: 'true'
+            - name: DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL
+              value: 'true'
+            # APM: receives traces from the application pods.
+            - name: DD_APM_ENABLED
+              value: 'true'
+            - name: DD_APM_NON_LOCAL_TRAFFIC
+              value: 'true'
+            - name: DD_PROCESS_AGENT_ENABLED
+              value: 'true'
+          ports:
+            - containerPort: 8126
+              name: traceport
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: dockersocket
+              mountPath: /var/run/docker.sock
+            - name: procdir
+              mountPath: /host/proc
+              readOnly: true
+            - name: cgroups
+              mountPath: /host/sys/fs/cgroup
+              readOnly: true
+            - name: pointerdir
+              mountPath: /opt/datadog-agent/run
+            - name: logpodpath
+              mountPath: /var/log/pods
+              readOnly: true
+      volumes:
+        - name: dockersocket
+          hostPath:
+            path: /var/run/docker.sock
+        - name: procdir
+          hostPath:
+            path: /proc
+        - name: cgroups
+          hostPath:
+            path: /sys/fs/cgroup
+        - name: pointerdir
+          hostPath:
+            path: /opt/datadog-agent/run
+        - name: logpodpath
+          hostPath:
+            path: /var/log/pods
